@@ -1,0 +1,30 @@
+# ignore backup files and similar artifacts
+*~
+\#*#
+.#*
+*.swp
+.DS_Store
+*.orig
+*.rej
+*.bak
+tmp/
+
+# ignore generated gems and jars and build artifacts
+*.gem
+/*.jar
+.bundle
+pkg
+
+Gemfile.lock
+rerun.txt
+
+# rcov generated
+coverage
+
+# rdoc generated
+rdoc
+
+# any local configuration
+.rvmrc
+Gemfile.local
+
