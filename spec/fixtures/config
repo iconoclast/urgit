@@ -1,0 +1,42 @@
+
+[core]
+        repositoryformatversion = 0
+        filemode = true
+        bare = true
+        logallrefupdates = true
+
+[user]
+        name = "rspec"
+        email = "rpec@urgit.config.test"
+        signkey = AAE7B5CE
+
+[color]
+        ui = "auto"
+[color "status"]
+    added = green
+    changed = red
+    untracked = cyan
+
+[color.diff]
+    meta = cyan
+    frag = yellow
+    whitespace = "red reverse"
+
+[remote "origin"]
+        fetch = +refs/heads/*:refs/remotes/origin/*
+        url = /tmp/fake-1
+
+[remote "another-repo"]
+        fetch = +refs/heads/*:refs/remotes/origin/*
+        url = /tmp/fake-2
+        push =  refs/heads/master:refs/heads/qa/master
+[branch "master"]
+        remote = origin
+        merge = refs/heads/master
+
+[rerere]
+        enabled
+
+[branch "climbing"]
+        remote = another-repo
+        merge = refs/heads/limb

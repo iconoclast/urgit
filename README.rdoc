@@ -4,6 +4,15 @@ A micro ruby git inspired toolset.
 
 This is a micro subset of git features implemented in ruby.  The goal is to allow access to some parts of a git repository without an external git client on the system.  It also attemps to work even under oppressive "least common denominitor" situations, such as running jruby on windows with a 1.5 era JDK. It does not in any way attempt to have all the features expected of a real git client.
 
+This franken-git would not have been possible without the effort, ideas and code stolen/borrowed/forked/repurposed from projects like these:
+
+git://github.com/minad/gitrb.git
+git://github.com/georgi/git_store.git
+git://github.com/judofyr/gash.git
+git://github.com/mojombo/grit.git
+git://github.com/schacon/git-ruby.git
+
+
 == Contributing to urgit
 
 * Check out the latest master to make sure the feature hasn't been implemented or the bug hasn't been fixed yet
