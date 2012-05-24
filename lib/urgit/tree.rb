@@ -235,6 +235,18 @@ module Urgit
       collector
     end
 
+    # Walks the children and returns a list of object ids
+    def object_ids
+      @children.inject([self.id]) do |list, (name, entry)|
+        if entry.is_a?(Tree)
+          list.concat entry.object_ids
+        else
+          list << entry.id
+        end
+        list
+      end
+    end
+
     private
 
     def sorted_children

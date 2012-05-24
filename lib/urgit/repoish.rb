@@ -8,7 +8,7 @@ module Urgit
     include Urgit
 
     if RUBY_VERSION > '1.9'
-      def set_encoding(s); s.force_encoding(@encoding); end
+      def set_encoding(s); s.force_encoding(@encoding || DEFAULT_ENCODING); end
     else
       def set_encoding(s); s; end
     end
@@ -265,6 +265,59 @@ module Urgit
       end
 
       entries
+    end
+
+
+    # Returns a list of commit ids starting from the specified ref
+    def rev_list (sha = head)
+      # todo: pass in an optional max number of ids to return
+      limit = nil
+      uninteresting = nil
+      if sha.is_a? Array
+        (uninteresting, sha) = sha
+      end
+
+      if sha.is_a? String
+        sha = get(sha)
+      end
+
+      if uninteresting.is_a? String
+        uninteresting = get(uninteresting)
+      end
+
+      already_searched = {}
+
+      # todo: fix order of results
+      walk_id_list([uninteresting], already_searched)
+      walk_id_list([sha], already_searched, limit)
+    end
+
+    # rev_list calls this to walk commits and return list of shas
+    def walk_id_list(list, already_searched = {}, limit = nil)  # :nodoc:
+      results = []
+      while list.any? && (limit.nil? || results.size < limit)
+        current = list.shift
+        unless already_searched[current.id]
+          already_searched[current.id] = true
+          results << current.id
+          current.parents.each { |par| list << get(par) }
+        end
+      end
+      results
+    end
+
+    # Returns an array of ids for a revision range.  Unlike rev_list this will
+    # include all objects not just the commit chain.
+    def sync_list(sha = head)
+      processed = {}
+
+      commits = rev_list(sha)
+      commits.each do |commit|
+        processed[commit] = true
+        get(commit).tree.object_ids.each { |ob|  processed[ob] = true }
+      end
+
+      processed.keys.compact
     end
 
     # Returns a log formatted list of commits starting from head commit.
@@ -533,7 +586,7 @@ module Urgit
 
     # Returns the path to the object file for given id.
     def object_path(id)
-      "#{path}/objects/#{id[0...2]}/#{id[2..39]}"
+      "#{path}/objects/#{id[0...2]}/#{id[2..39]}" if id
     end
 
     # Read the id of the head commit.
