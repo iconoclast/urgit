@@ -8,6 +8,10 @@ module Urgit
       parse(options[:data]) if options[:data]
     end
 
+    def type
+      :tag
+    end
+
     def parse(data)
       headers, @message = data.split("\n\n", 2)
       repository.set_encoding(@message)

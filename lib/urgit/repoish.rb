@@ -6,6 +6,7 @@ module Urgit
   module Repoish
     # attr_reader :path, :root, :branch, :head, :encoding
     include Urgit
+    include Urgit::PushMiPullYu
 
     if RUBY_VERSION > '1.9'
       def set_encoding(s); s.force_encoding(@encoding || DEFAULT_ENCODING); end
@@ -111,6 +112,7 @@ module Urgit
 
     # Bare repository?
     def bare?
+      # config.bare
       @bare
     end
 
@@ -137,12 +139,22 @@ module Urgit
     def branch=(branch)
       @branch = branch
       load
+      branch
     end
 
     # Switch to a new branch
     def switch_branch(branch)
       @branch = branch
       clear # which also performs load
+      branch
+    end
+
+    # A list of tags that currently exist in the repo
+    def tags
+      # todo: handle tag objects as well
+      Dir.chdir "#{path}/refs/tags" do
+        Dir.glob("**/*").select { |fn| File.file?(fn) }
+      end
     end
 
     # Has our repository been changed on disk?
@@ -241,6 +253,7 @@ module Urgit
                           :message => message)
 
       commit.parents.concat parent_list.slice!(0..-1)
+      yield commit if block_given?
       commit.save
 
       write_head_id(commit.id)
@@ -250,8 +263,8 @@ module Urgit
     end
 
     # Create a new commit only if the tree has been modified
-    def commit(*args)
-      commit!(*args) if root.modified?
+    def commit(*args, &block)
+      commit!(*args, &block) if root.modified?
     end
 
     # Returns a list of commits starting from head commit.
@@ -268,13 +281,18 @@ module Urgit
     end
 
 
-    # Returns a list of commit ids starting from the specified ref
-    def rev_list (sha = head)
+    # Returns a list of commit ids for the specified ref range.
+    # The default range returns from HEAD back to the beginning of time.
+    # Giving one argument means the range from that point back to the beginning of time.
+    # Pass start and stop points to get a different range.
+    def rev_list (*rev_range)
       # todo: pass in an optional max number of ids to return
       limit = nil
-      uninteresting = nil
-      if sha.is_a? Array
-        (uninteresting, sha) = sha
+      sha = rev_range.pop || 'HEAD'
+      uninteresting = rev_range.pop
+
+      if uninteresting.is_a? Array
+        (uninteresting, sha) = uninteresting
       end
 
       if sha.is_a? String
@@ -308,10 +326,10 @@ module Urgit
 
     # Returns an array of ids for a revision range.  Unlike rev_list this will
     # include all objects not just the commit chain.
-    def sync_list(sha = head)
+    def sync_list(*shas)
       processed = {}
 
-      commits = rev_list(sha)
+      commits = rev_list(*shas)
       commits.each do |commit|
         processed[commit] = true
         get(commit).tree.object_ids.each { |ob|  processed[ob] = true }
@@ -357,14 +375,53 @@ module Urgit
       raise
     end
 
-    # Create a 'simple tag' at the current head.
-    def simple_tag(tag_name)
-      write_simple_tag(head.id, tag_name)
+    # Create a 'simple tag' at the current or a specified head.
+    # This type of tag is sometimes referred to as a 'lightweight tag'
+    def simple_tag(tag_name, head_id = head.id)
+      write_simple_tag(head_id, tag_name)
     end
 
-    # Create a 'simple tag' at the current head replacing any that may already exist with the same name.
-    def simple_tag!(tag_name)
+    # Create a 'simple tag' at the current or specified head replacing any that may already exist with the same name.
+    def simple_tag!(tag_name, head_id = head.id)
       write_simple_tag(head.id, tag_name, true)
+    end
+
+    # Fast-forward one head from another
+    # Specify the forward head you want to catch up to.
+    # You may also specify the target head to receive  the fast-forward, defaulting
+    # to the current branch.
+    def fast_forward(to, from = branch, reverse = false)
+      from_id = read_branch_id(from)
+      # from_obj = have_object?(from_id) if from_id
+      to_obj = have_object?(to)
+      to_id = to_obj.id if to_obj
+
+      unless from_id && to_id
+        raise ArgumentError, "Attempted fast-forward to #{to} (#{to_id || 'nil'}) from #{from} (#{from_id || 'nil'})."
+      end
+
+      if rev_list(to_id).include? from_id
+        write_branch_id(to_obj.id, from)
+      elsif reverse && to_id == read_branch_id(to)
+        if rev_list(from_id).include? to_id
+          write_branch_id(from_id, to)
+        end
+      else
+        raise ArgumentError, "Can not fast-forward to #{to_id} from #{from_id}"
+      end
+      refresh
+    end
+
+    # Performs a soft reset (cached objects are not cleared)
+    def reset(to)
+      to_commit = get_commit(to)
+      write_head_id(to_commit.id)
+    end
+
+    # Performs a hard reset (cached objects are cleared)
+    def reset!(to)
+      reset(to)
+      clear
     end
 
     # Get an object by its id.
@@ -374,7 +431,7 @@ module Urgit
       return nil if id.nil?
       return id if (GitObject === id || Reference === id)
 
-      raise ArgumentError, "Invalid id given: #{id} (#{id.class.to_s})" if !(String === id)
+      raise ArgumentError, "Invalid type of id given: #{id} (#{id.class.to_s})" if !(String === id)
 
       if id =~ SHA_PATTERN
         raise ArgumentError, "Sha too short: #{id}" if id.length < 5
@@ -390,23 +447,26 @@ module Urgit
         # id = list.first
 
         # ok, if we don't have rev-parse, let's at least get the easy ones manually
-        if id == 'HEAD'
+        case
+        when id == 'HEAD'
           id = read_head_id
-        else
-          branch_head = read_branch_id(id)
-          id = branch_head if branch_head
+        when (branch_head = read_branch_id(id))
+          id = branch_head
+        when (tag_head = read_tag_id(id))
+          # beware simple tags vs. tag objects
+          id = tag_head
         end
 
         trie = @objects.find(id)
         raise NotFound, "Sha is ambiguous: #{id}" if trie.size > 1
-        return trie.value if !trie.empty?
+        return trie.value unless trie.empty?
 
-        raise NotFound, "Sorry, rev-parse hasn't been completely reimplemented yet."
+        # raise NotFound, "Sorry, rev-parse hasn't been completely reimplemented yet."
       else
         raise ArgumentError, "Invalid id given: #{id}"
       end
 
-      @logger.debug "urgit: Loading #{id}"
+      logger.debug "urgit: Loading #{id}" if logger
 
       path = object_path(id)
       if File.exists?(path) || (glob = Dir.glob(path + '*')).size >= 1
@@ -426,14 +486,14 @@ module Urgit
         raise NotFound, "Bad object: #{id}" if content.length != size.to_i
       else
         trie = @packs.find(id)
-	raise NotFound, "Object not found: #{id}" if trie.empty?
-	raise NotFound, "Sha is ambiguous: #{id}" if trie.size > 1
+        raise NotFound, "Object not found: #{id}" if trie.empty?
+        raise NotFound, "Sha is ambiguous: #{id}" if trie.size > 1
         id = trie.key
         pack, offset = trie.value
         content, type = pack.get_object(offset)
       end
 
-      @logger.debug "urgit: Loaded #{type} #{id}"
+      logger.debug "urgit: Loaded #{type} #{id}" if logger
 
       set_encoding(id)
       object = GitObject.factory(type, :repository => self, :id => id, :data => content)
@@ -444,6 +504,7 @@ module Urgit
     def get_tree(id)   get_type(id, :tree) end
     def get_blob(id)   get_type(id, :blob) end
     def get_commit(id) get_type(id, :commit) end
+    def get_tag(id)    get_type(id, :tag) end # note: this looks for a tag object, not a simple/lightweight tag
 
     # Write a raw object to the repository.
     #
@@ -457,7 +518,7 @@ module Urgit
       id = Digest::SHA1.hexdigest(data)
       path = object_path(id)
 
-      @logger.debug "urgit: Storing #{id}"
+      logger.debug "urgit: Storing #{id}" if logger
 
       if !File.exists?(path)
         FileUtils.mkpath(File.dirname(path))
@@ -466,7 +527,7 @@ module Urgit
         end
       end
 
-      @logger.debug "urgit: Stored #{id}"
+      logger.debug "urgit: Stored #{id}" if logger
 
       set_encoding(id)
       object.repository = self
@@ -476,36 +537,6 @@ module Urgit
       object
     end
 
-    # def method_missing(name, *args)
-    #   cmd = name.to_s
-    #   if cmd[0..3] == 'git_'
-    #     cmd = cmd[4..-1].tr('_', '-')
-    #     args = args.flatten.compact.map {|a| a.to_s }
-
-    #     @logger.debug "urgit: #{self.class.git_path} #{cmd} #{args.inspect}"
-
-    #     out = IO.popen('-', 'rb') do |io|
-    #       if io
-    #         # Read in binary mode (ascii-8bit) and convert afterwards
-    #         block_given? ? yield(io) : set_encoding(io.read)
-    #       else
-    #         # child's stderr goes to stdout
-    #         STDERR.reopen(STDOUT)
-    #         ENV['GIT_DIR'] = path
-    #         exec(self.class.git_path, cmd, *args)
-    #       end
-    #     end
-
-    #     if $?.exitstatus > 0
-    #       return '' if $?.exitstatus == 1 && out == ''
-    #       raise CommandError.new("git #{cmd}", args, out)
-    #     end
-
-    #     out
-    #   else
-    #     super
-    #   end
-    # end
 
     def default_user
       @default_user ||= begin
@@ -515,6 +546,98 @@ module Urgit
         email = ENV['USER'] + '@' + `hostname -f`.chomp if email.empty?
         User.new(name, email)
       end
+    end
+
+    # Set or change the default user (used by default for commits, etc.)
+    def default_user=(user_info)
+      (name, email, date) = user_info
+      date ||= Time.now
+      @default_user = User.new(name, email, date)
+    end
+
+    # Return false if an object doesn't exist, or a truthy value if it does
+    def have_object?(sha)
+      begin
+        get(sha)
+      rescue Urgit::NotFound
+        return false
+      end
+    end
+
+    def parent_list
+      @parent_list ||= []
+    end
+
+    # Returns the path to the current head file.
+    def head_path
+      "#{path}/refs/heads/#{branch}"
+    end
+
+    # Returns the path to the object file for given id.
+    def object_path(id)
+      "#{path}/objects/#{id[0...2]}/#{id[2..39]}" if id
+    end
+
+    # Read the id of the head commit.
+    #
+    # Returns the object id of the last commit.
+    def read_head_id
+      File.exists?(head_path) ? File.read(head_path).strip : read_one_packed_refs_id("refs/heads/#{branch}")
+    end
+
+    def read_branch_id(branch_name = @branch)
+      read_refs_id('heads', branch_name)
+    end
+
+    def read_tag_id(tag_name)
+      read_refs_id('tags', tag_name)
+    end
+
+    def read_remotes_id(remote_name, branch_name)
+      read_refs_id('remotes', "#{remote_name}/#{branch_name}")
+    end
+
+    def read_refs_id(type, name)
+      ref = "refs/#{type}/#{name}"
+      ref_path = "#{path}/#{ref}"
+      File.exists?(ref_path) ? File.read(ref_path).strip : read_one_packed_refs_id(ref)
+    end
+
+    def write_head_id(id)
+      write_refs_id(id, 'heads', @branch)
+    end
+
+    def write_branch_id(id, branch_name = @branch)
+      write_refs_id(id, 'heads', branch_name)
+    end
+
+    def write_remotes_id(id, remote_name, branch_name)
+      write_refs_id(id, 'remotes', "#{remote_name}/#{branch_name}")
+    end
+
+
+    def write_simple_tag(id, tag_name, force=nil)
+      return if !force && File.exists?("#{path}/refs/tags/#{tag_name}")
+      write_refs_id(id, 'tags', tag_name)
+    end
+
+    def write_refs_id(id, type, name)
+      ref_path = "#{path}/refs/#{type}/#{name}"
+      FileUtils.mkdir_p(File.dirname(ref_path))
+      File.open(ref_path, 'wb') {|file| file.write(id) }
+      id
+    end
+
+    def remove_tag!(tag_name)
+      # note: this only removes the ref.  a tag object may be left behind.
+      remove_ref!('tags', tag_name)
+    end
+
+    def remove_ref!(*args)
+      # using splat args because remotes have more path components than other refs
+      ref_path = File.join(path, 'refs', *args)
+      logger.debug "urgit: Removing ref #{ref_path}" if logger
+      FileUtils.rm(ref_path) if File.exists?(ref_path)
     end
 
     private
@@ -541,10 +664,6 @@ module Urgit
     #   end
     # end
 
-    def parent_list
-      @parent_list ||= []
-    end
-
     def get_type(id, expected)
       object = get(id)
       raise NotFound, "Wrong type #{object.type}, expected #{expected}" if object && object.type != expected
@@ -560,7 +679,7 @@ module Urgit
         Dir.open(packs_path) do |dir|
           entries = dir.select { |entry| entry =~ /\.pack$/i }
           entries.each do |entry|
-            @logger.debug "urgit: Loading pack #{entry}"
+            logger.debug "urgit: Loading pack #{entry}" if logger
             pack = Pack.new(File.join(packs_path, entry))
             pack.each_object {|id, offset| @packs.insert(id, [pack, offset]) }
           end
@@ -576,54 +695,13 @@ module Urgit
         @head = nil
         @root = Tree.new(:repository => self)
       end
-      @logger.debug "urgit: Reloaded, head is #{@head ? @head.id : 'nil'}"
-    end
-
-    # Returns the path to the current head file.
-    def head_path
-      "#{path}/refs/heads/#{branch}"
-    end
-
-    # Returns the path to the object file for given id.
-    def object_path(id)
-      "#{path}/objects/#{id[0...2]}/#{id[2..39]}" if id
-    end
-
-    # Read the id of the head commit.
-    #
-    # Returns the object id of the last commit.
-    def read_head_id
-      File.exists?(head_path) ? File.read(head_path).strip : read_one_packed_refs_id("refs/heads/#{branch}")
-    end
-
-    def write_head_id(id)
-      write_refs_id(id, 'heads', @branch)
-    end
-
-    def write_branch_id(id, branch_name = @branch)
-      write_refs_id(id, 'heads', branch_name)
-    end
-
-    def write_simple_tag(id, tag_name, force=nil)
-      return if !force && File.exists?("#{path}/refs/tags/#{tag_name}")
-      write_refs_id(id, 'tags', tag_name)
-    end
-
-    def write_refs_id(id, type, name)
-      ref_path = "#{path}/refs/#{type}/#{name}"
-      FileUtils.mkdir_p(File.dirname(ref_path))
-      File.open(ref_path, 'wb') {|file| file.write(id) }
+      logger.debug "urgit: Reloaded, head is #{@head ? @head.id : 'nil'}" if logger
     end
 
     def legacy_loose_object?(buf)
       buf[0].ord == 0x78 && ((buf[0].ord << 8) | buf[1].ord) % 31 == 0
     end
 
-    def read_branch_id(branch_name = @branch)
-      branch_ref = "refs/heads/#{branch_name}"
-      heads_path = "#{path}/#{branch_ref}"
-      File.exists?(heads_path) ? File.read(heads_path).strip : read_one_packed_refs_id(branch_ref)
-    end
 
     def read_packed_refs(filter = nil)
       return nil unless File.exists?("#{path}/packed-refs")

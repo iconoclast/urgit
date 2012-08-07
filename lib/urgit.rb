@@ -1,7 +1,7 @@
 require 'zlib'
 require 'digest/sha1'
 require 'fileutils'
-require 'logger'
+# require 'logger'
 require 'enumerator'
 require 'stringio'
 
@@ -17,6 +17,7 @@ require 'urgit/user'
 require 'urgit/pack'
 require 'urgit/commit'
 require 'urgit/trie'
+require 'urgit/pushmi_pullyu'
 # require 'urgit/repository'
 
 module Urgit
@@ -24,7 +25,7 @@ module Urgit
   class NoSuchShaFound < StandardError; end
 
   SHA_PATTERN = /^[A-Fa-f0-9]{5,40}$/
-  REVISION_PATTERN = /^[\w\-\.]+([\^~](\d+)?)*$/
+  REVISION_PATTERN = /^[\w\-\.][\w\-\.\/]*([\^~](\d+)?)*$/
   DEFAULT_ENCODING = 'utf-8'
 
   # Returns the hash value of an object string.
